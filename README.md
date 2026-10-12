@@ -15,12 +15,12 @@ Prompt Dungeon pairs a deterministic server-side game engine with a rich noir Re
                 │
                 ▼ (HTTP REST API /api/*)
 [ FastAPI Backend / Game Engine ]
-    ├── In-Memory Session Store (Isolated UUID token state)
+    ├── SQLite Session Store (WAL-mode durable persistence for serverless & local)
     ├── Deterministic Truth Ledger (Facts, Contradictions, Theories)
     ├── Forensic Examine & Evidence Catalog (12 targets -> 12 items)
     ├── Contradiction Engine (Precondition lie & evidence checks)
     ├── Scoring & Solution Shield (100 pts, attempts, spoiler safety)
-    └── Gemma AI Adapter (Hosted Gemma-2-9B-IT inference with safe fallback)
+    └── Gemma AI Adapter (Hosted Gemma-3 / Gemma-2 inference with safe fallback)
 ```
 
 ### Deterministic Integrity & Ground Truth Authority
@@ -86,7 +86,7 @@ By default, the backend runs in deterministic authorial fallback mode (`LLM_PROV
 
 ## 4. Running the Tests
 
-### Backend Test Suite (100 passing tests)
+### Backend Test Suite (102 passing tests)
 ```powershell
 cd C:\Users\Vanih\OneDrive\Desktop\prompt-dungeon
 .\backend\.venv\Scripts\python.exe -m pytest backend\tests\ -v
@@ -97,6 +97,11 @@ cd C:\Users\Vanih\OneDrive\Desktop\prompt-dungeon
 .\backend\.venv\Scripts\python.exe full_playthrough_audit.py
 ```
 
+### Smoke Test Suite
+```powershell
+.\backend\.venv\Scripts\python.exe smoke_test.py
+```
+
 ### Frontend Type-Check & Production Build
 ```powershell
 cd C:\Users\Vanih\OneDrive\Desktop\prompt-dungeon\frontend
@@ -105,7 +110,38 @@ npm run build
 
 ---
 
-## 5. Canonical Mystery Summary (Spoiler Warning)
+## 5. Vercel Serverless & Production Deployment
+
+Prompt Dungeon includes ready-to-deploy configurations for **Vercel**:
+
+### Deployment Topologies
+- **Root Project (Recommended)**: Deploy the root repository to Vercel. `vercel.json` routes `/api/(.*)` to the Python serverless function at `api/index.py` (which mounts FastAPI from `backend/main.py`), and serves the compiled React frontend for all other paths.
+- **Standalone Backend**: Deploy `backend/` directly to Vercel project `prompt-dungeon-backend` using `backend/vercel.json` and `backend/api/index.py`.
+
+### Required Vercel Environment Variables
+Configure these in the Vercel Project Settings > **Environment Variables**:
+
+| Variable | Description | Example / Recommended Value |
+| :--- | :--- | :--- |
+| `LLM_PROVIDER` | AI provider for in-character dialogue | `openrouter` (or `groq`, `together`, `none`) |
+| `LLM_API_KEY` | Provider API key (secret) | `sk-or-v1-...` |
+| `LLM_MODEL_ID` | Gemma model identifier | `google/gemma-3-12b-it` (or `gemma2-9b-it`) |
+| `LLM_API_BASE_URL` | Provider API base URL | `https://openrouter.ai/api/v1` |
+| `CORS_ORIGINS` | Permitted frontend origins | `https://prompt-dungeon.vercel.app` |
+| `DATABASE_URL` | SQLite path for serverless session durability | `/tmp/prompt_dungeon.db` |
+
+### Serverless Session Durability
+Serverless lambda instances are ephemeral and recycle across requests. Prompt Dungeon uses `SQLiteSessionStore` with WAL mode:
+- In serverless environments, it automatically creates `/tmp/prompt_dungeon.db`.
+- All session mutations (`examine`, `interrogate`, `present-evidence`, `theories`, `accuse`) persist directly to SQLite, preventing state loss across cold starts.
+
+### System Diagnostics Endpoints
+- `GET /api/health` — Returns status, version, store type, and LLM configuration details.
+- `GET /api/health/llm` — Performs a live connectivity and inference probe against the configured Gemma provider.
+
+---
+
+## 6. Canonical Mystery Summary (Spoiler Warning)
 
 - **Case:** *The Last Exhibition* (October 12, 2026, 9:17 PM).
 - **Culprit:** **Elias Voss** (Chief Conservator).
