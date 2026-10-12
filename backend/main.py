@@ -36,6 +36,7 @@ from session_store import (
     SessionNotFoundError,
     session_store,
 )
+from gemma_provider import get_llm_status, test_llm_connection
 
 
 # ============================================================================
@@ -62,12 +63,18 @@ try:
 except Exception:
     allowed_origins = ["http://localhost:5173", "http://127.0.0.1:5173"]
 
+# Ensure standard local development ports are always included
+for dev_origin in ["http://localhost:5173", "http://127.0.0.1:5173", "http://localhost:3000", "http://127.0.0.1:3000"]:
+    if dev_origin not in allowed_origins:
+        allowed_origins.append(dev_origin)
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=allowed_origins,
+    allow_origin_regex=r"^https://.*\.vercel\.app$|^https://.*\.prompt-dungeon.*$",
     allow_credentials=True,
-    allow_methods=["GET", "POST", "OPTIONS"],
-    allow_headers=["Content-Type", "Authorization"],
+    allow_methods=["GET", "POST", "OPTIONS", "HEAD", "PUT", "DELETE"],
+    allow_headers=["*"],
 )
 
 
@@ -324,26 +331,61 @@ async def max_attempts_exceeded_handler(request: Request, exc: MaxAttemptsExceed
 # ============================================================================
 
 class HealthResponse(BaseModel):
-    """Truthful health response reporting server status only."""
+    """Truthful health response reporting server status and non-sensitive diagnostics."""
     status: str
     version: str
     timestamp: str
+    llm_provider: Optional[str] = None
+    llm_configured: Optional[bool] = None
+    llm_model: Optional[str] = None
+    session_store_type: Optional[str] = None
 
 
-@app.get("/api/health", response_model=HealthResponse)
+@app.get("/", tags=["System"])
+async def get_root() -> dict:
+    """
+    Root service index for Prompt Dungeon API.
+    Identifies the service, environment, and pointers to health and documentation.
+    """
+    return {
+        "service": "Prompt Dungeon API",
+        "case": "The Last Exhibition",
+        "version": "1.0.0",
+        "status": "operational",
+        "health_endpoint": "/api/health",
+        "docs_url": "/docs",
+        "openapi_url": "/openapi.json",
+    }
+
+
+@app.get("/api/health", response_model=HealthResponse, tags=["System"])
 async def get_health() -> HealthResponse:
     """
     Health check endpoint reporting backend server status.
     Truthful, minimal, and free of secrets, model claims, or internal errors.
     """
+    provider_info = get_llm_status()
     return HealthResponse(
         status="healthy",
         version="1.0.0",
         timestamp=datetime.now(timezone.utc).isoformat(),
+        llm_provider=provider_info.get("provider"),
+        llm_configured=provider_info.get("configured"),
+        llm_model=provider_info.get("model_id"),
+        session_store_type=type(session_store).__name__,
     )
 
 
-@app.get("/api/config", response_model=ConfigResponse)
+@app.get("/api/health/llm", tags=["System"])
+async def get_llm_health() -> dict:
+    """
+    Diagnostic probe checking reachability of the configured Gemma inference provider.
+    Guaranteed zero credential leak: never returns or logs secrets.
+    """
+    return test_llm_connection()
+
+
+@app.get("/api/config", response_model=ConfigResponse, tags=["System"])
 async def get_config() -> ConfigResponse:
     """
     Returns player-safe static game configuration and facility catalog.
@@ -360,6 +402,7 @@ async def get_config() -> ConfigResponse:
     "/api/sessions",
     response_model=SessionStateResponse,
     status_code=status.HTTP_201_CREATED,
+    tags=["Sessions"],
 )
 async def create_session(body: Optional[CreateSessionRequest] = None) -> SessionStateResponse:
     """
@@ -371,7 +414,7 @@ async def create_session(body: Optional[CreateSessionRequest] = None) -> Session
     return session.to_public_response()
 
 
-@app.get("/api/sessions/{session_id}", response_model=SessionStateResponse)
+@app.get("/api/sessions/{session_id}", response_model=SessionStateResponse, tags=["Sessions"])
 async def get_session(session_id: str) -> SessionStateResponse:
     """
     Retrieves the public state of an active investigation session.
@@ -381,7 +424,7 @@ async def get_session(session_id: str) -> SessionStateResponse:
     return session.to_public_response()
 
 
-@app.post("/api/sessions/{session_id}/reset", response_model=ResetSessionResponse)
+@app.post("/api/sessions/{session_id}/reset", response_model=ResetSessionResponse, tags=["Sessions"])
 async def reset_session(session_id: str) -> ResetSessionResponse:
     """
     Marks the current session as RESET and returns a fresh, initialized session.
@@ -401,27 +444,31 @@ async def reset_session(session_id: str) -> ResetSessionResponse:
 # 5. Gameplay & Investigation Action Endpoints
 # ============================================================================
 
-@app.post("/api/sessions/{session_id}/examine", response_model=ExamineResponse)
+@app.post("/api/sessions/{session_id}/examine", response_model=ExamineResponse, tags=["Investigation"])
 async def post_examine(session_id: str, body: ExamineRequest) -> ExamineResponse:
     """
     Inspects a physical location or equipment rack from the predefined target list.
     Repeated examination is idempotent: does not duplicate evidence or alter score.
     """
     session = session_store.get_session(session_id, require_active=True)
-    return examine_target(session, body)
+    res = examine_target(session, body)
+    session_store.save_session(session)
+    return res
 
 
-@app.post("/api/sessions/{session_id}/interrogate", response_model=InterrogateResponse)
+@app.post("/api/sessions/{session_id}/interrogate", response_model=InterrogateResponse, tags=["Investigation"])
 async def post_interrogate(session_id: str, body: InterrogateRequest) -> InterrogateResponse:
     """
     Submits a free-form question to a suspect.
     Enforces per-session rate limits, 6-turn sliding history, and returns authored dialogue.
     """
     session = session_store.get_session(session_id, require_active=True)
-    return interrogate_suspect(session, body)
+    res = interrogate_suspect(session, body)
+    session_store.save_session(session)
+    return res
 
 
-@app.post("/api/sessions/{session_id}/present-evidence", response_model=PresentEvidenceResponse)
+@app.post("/api/sessions/{session_id}/present-evidence", response_model=PresentEvidenceResponse, tags=["Investigation"])
 async def post_present_evidence(
     session_id: str, body: PresentEvidenceRequest
 ) -> PresentEvidenceResponse:
@@ -429,24 +476,30 @@ async def post_present_evidence(
     Confronts a suspect with an explicitly discovered evidence item to test for contradictions.
     """
     session = session_store.get_session(session_id, require_active=True)
-    return present_evidence(session, body)
+    res = present_evidence(session, body)
+    session_store.save_session(session)
+    return res
 
 
-@app.post("/api/sessions/{session_id}/theories", response_model=UpdateTheoriesResponse)
+@app.post("/api/sessions/{session_id}/theories", response_model=UpdateTheoriesResponse, tags=["Investigation"])
 async def post_theories(session_id: str, body: UpdateTheoriesRequest) -> UpdateTheoriesResponse:
     """
     Updates the player's deduction workbench in the Truth Ledger without submitting an accusation.
     """
     session = session_store.get_session(session_id, require_active=True)
-    return update_player_theories(session, body)
+    res = update_player_theories(session, body)
+    session_store.save_session(session)
+    return res
 
 
-@app.post("/api/sessions/{session_id}/accuse", response_model=AccuseResponse)
+@app.post("/api/sessions/{session_id}/accuse", response_model=AccuseResponse, tags=["Investigation"])
 async def post_accuse(session_id: str, body: AccuseRequest) -> AccuseResponse:
     """
     Submits a formal indictment. Evaluates the accusation against the Canonical Solution Key.
     """
     # Note: require_active=False because post_accuse handles CLOSED/SOLVED internally with MAX_ATTEMPTS_EXCEEDED
     session = session_store.get_session(session_id, require_active=False)
-    return accuse_suspect(session, body)
+    res = accuse_suspect(session, body)
+    session_store.save_session(session)
+    return res
 

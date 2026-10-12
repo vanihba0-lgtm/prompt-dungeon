@@ -18,7 +18,41 @@ import type {
   UpdateTheoriesResponse,
 } from './types';
 
-const API_BASE = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/$/, '');
+function resolveApiBase(): string {
+  let raw = (import.meta.env.VITE_API_BASE_URL || '').trim();
+  // Strip trailing slashes
+  raw = raw.replace(/\/+$/, '');
+  // If user configured e.g. "https://api.example.com/api", strip trailing /api
+  // because individual API path parameters start with "/api/..."
+  if (raw.endsWith('/api')) {
+    raw = raw.slice(0, -4);
+  }
+  return raw;
+}
+
+const API_BASE = resolveApiBase();
+
+export function getEffectiveApiBase(): string {
+  return API_BASE || '(local proxy / relative)';
+}
+
+export interface HealthResponse {
+  status: string;
+  version: string;
+  timestamp: string;
+  llm_provider?: string | null;
+  llm_configured?: boolean | null;
+  llm_model?: string | null;
+  session_store_type?: string | null;
+}
+
+export interface LlmProbeResponse {
+  success: boolean;
+  status: string;
+  provider?: string;
+  model_id?: string;
+  message: string;
+}
 
 export class ApiClientError extends Error {
   code: string;
@@ -37,7 +71,8 @@ export class ApiClientError extends Error {
 }
 
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
-  const url = `${API_BASE}${path}`;
+  const cleanPath = path.startsWith('/') ? path : `/${path}`;
+  const url = `${API_BASE}${cleanPath}`;
   const controller = new AbortController();
   const timeout = window.setTimeout(() => controller.abort(), 25_000);
   const headers = {
@@ -95,7 +130,9 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
 }
 
 export const api = {
-  getHealth: () => request<{ status: string; version: string; timestamp: string }>('/api/health'),
+  getHealth: () => request<HealthResponse>('/api/health'),
+
+  probeLlm: () => request<LlmProbeResponse>('/api/health/llm'),
 
   getConfig: () => request<ConfigResponse>('/api/config'),
 

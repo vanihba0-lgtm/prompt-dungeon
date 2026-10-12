@@ -56,6 +56,14 @@ def active_session_id(client):
 # ============================================================================
 
 class TestSystemEndpoints:
+    def test_root_endpoint(self, client):
+        resp = client.get("/")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["service"] == "Prompt Dungeon API"
+        assert data["status"] == "operational"
+        assert "/api/health" in data["health_endpoint"]
+
     def test_health_endpoint(self, client):
         resp = client.get("/api/health")
         assert resp.status_code == 200
@@ -63,6 +71,14 @@ class TestSystemEndpoints:
         assert data["status"] == "healthy"
         assert "version" in data
         assert "timestamp" in data
+        assert "session_store_type" in data
+
+    def test_llm_health_probe(self, client):
+        resp = client.get("/api/health/llm")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "status" in data
+        assert "message" in data
 
     def test_config_endpoint(self, client):
         resp = client.get("/api/config")

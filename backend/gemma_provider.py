@@ -22,12 +22,121 @@ from case_data import SUSPECT_DOSSIERS
 # Environment Configuration (Backend only)
 LLM_PROVIDER = os.getenv("LLM_PROVIDER", "none").lower()
 LLM_API_KEY = os.getenv("LLM_API_KEY", "")
-LLM_MODEL_ID = os.getenv("LLM_MODEL_ID", "gemma-2-9b-it")
+LLM_MODEL_ID = os.getenv("LLM_MODEL_ID", "")
 LLM_API_BASE_URL = os.getenv("LLM_API_BASE_URL", "")
 try:
-    LLM_TIMEOUT_SECONDS = float(os.getenv("LLM_TIMEOUT_SECONDS", "5.0"))
+    LLM_TIMEOUT_SECONDS = float(os.getenv("LLM_TIMEOUT_SECONDS", "10.0"))
 except ValueError:
-    LLM_TIMEOUT_SECONDS = 5.0
+    LLM_TIMEOUT_SECONDS = 10.0
+
+
+def _get_active_config() -> Tuple[str, str, str, str, float]:
+    """
+    Returns active LLM configuration.
+    Prioritizes module globals (for test monkeypatching) while checking os.getenv.
+    """
+    provider = LLM_PROVIDER.lower() if LLM_PROVIDER else os.getenv("LLM_PROVIDER", "none").lower()
+    key = LLM_API_KEY if LLM_API_KEY else os.getenv("LLM_API_KEY", "")
+
+    model = LLM_MODEL_ID if LLM_MODEL_ID else os.getenv("LLM_MODEL_ID", "")
+    if not model:
+        if provider == "openrouter":
+            model = "google/gemma-3-12b-it"
+        elif provider == "together":
+            model = "google/gemma-2-27b-it"
+        else:
+            model = "gemma2-9b-it"
+
+    base_url = LLM_API_BASE_URL if LLM_API_BASE_URL else os.getenv("LLM_API_BASE_URL", "")
+    timeout = LLM_TIMEOUT_SECONDS
+    return provider, key, model, base_url, timeout
+
+
+def get_llm_status() -> dict:
+    """Returns safe, non-sensitive provider configuration state."""
+    provider, key, model, base_url, timeout = _get_active_config()
+    is_configured = bool(provider not in ("none", "") and key)
+    return {
+        "provider": provider,
+        "configured": is_configured,
+        "model_id": model if is_configured else None,
+        "status": "configured" if is_configured else "offline_fallback",
+        "timeout_seconds": timeout,
+    }
+
+
+def test_llm_connection() -> dict:
+    """
+    Tests live reachability of the configured Gemma inference provider.
+    Never exposes API keys or secrets in the return value or logs.
+    """
+    provider, key, model, base_url, timeout = _get_active_config()
+    if provider in ("none", "") or not key:
+        return {
+            "success": False,
+            "status": "unconfigured",
+            "provider": provider,
+            "message": "LLM provider or API key is not configured. Running in offline fallback mode.",
+        }
+
+    if base_url:
+        clean_base = base_url.rstrip("/")
+    elif provider == "openrouter":
+        clean_base = "https://openrouter.ai/api/v1"
+    elif provider == "together":
+        clean_base = "https://api.together.xyz/v1"
+    else:
+        clean_base = "https://api.groq.com/openai/v1"
+
+    endpoint = clean_base if clean_base.endswith("/chat/completions") else f"{clean_base}/chat/completions"
+
+    headers = {
+        "Authorization": f"Bearer {key}",
+        "Content-Type": "application/json",
+        "HTTP-Referer": "http://localhost:5173",
+        "X-Title": "Prompt Dungeon",
+    }
+    payload = {
+        "model": model,
+        "messages": [{"role": "user", "content": "Respond with 'ready'"}],
+        "max_tokens": 10,
+    }
+
+    try:
+        with httpx.Client(timeout=min(timeout, 8.0)) as client:
+            resp = client.post(endpoint, json=payload, headers=headers)
+            if resp.status_code == 200:
+                return {
+                    "success": True,
+                    "status": "reachable",
+                    "provider": provider,
+                    "model_id": model,
+                    "message": "Successfully connected to Gemma inference provider.",
+                }
+            else:
+                return {
+                    "success": False,
+                    "status": f"HTTP_{resp.status_code}",
+                    "provider": provider,
+                    "model_id": model,
+                    "message": f"Provider returned HTTP {resp.status_code}.",
+                }
+    except httpx.TimeoutException:
+        return {
+            "success": False,
+            "status": "timeout",
+            "provider": provider,
+            "model_id": model,
+            "message": f"Connection timed out after {timeout}s.",
+        }
+    except Exception:
+        return {
+            "success": False,
+            "status": "error",
+            "provider": provider,
+            "model_id": model,
+            "message": "Network error connecting to provider.",
+        }
 
 
 def _build_suspect_system_prompt(suspect_id: SuspectId) -> str:
@@ -63,25 +172,31 @@ def generate_gemma_dialogue(
     Returns:
         (reply_text_or_None, model_status, fallback_reason)
     """
-    if LLM_PROVIDER in ("none", "") or not LLM_API_KEY:
+    provider, key, model, base_url, timeout = _get_active_config()
+
+    if provider in ("none", "") or not key:
         return None, ModelDialogueStatus.FALLBACK, "MODEL_UNAVAILABLE"
 
     system_prompt = _build_suspect_system_prompt(suspect_id)
 
     # Resolve base URL according to provider adapter
-    if LLM_API_BASE_URL:
-        base_url = LLM_API_BASE_URL.rstrip("/")
-    elif LLM_PROVIDER == "openrouter":
-        base_url = "https://openrouter.ai/api/v1"
-    elif LLM_PROVIDER == "together":
-        base_url = "https://api.together.xyz/v1"
+    if base_url:
+        clean_base = base_url.rstrip("/")
+    elif provider == "openrouter":
+        clean_base = "https://openrouter.ai/api/v1"
+    elif provider == "together":
+        clean_base = "https://api.together.xyz/v1"
     else:
-        base_url = "https://api.groq.com/openai/v1"
+        clean_base = "https://api.groq.com/openai/v1"
 
-    endpoint = f"{base_url}/chat/completions"
+    # Avoid duplicate /chat/completions in endpoint
+    if clean_base.endswith("/chat/completions"):
+        endpoint = clean_base
+    else:
+        endpoint = f"{clean_base}/chat/completions"
 
     payload = {
-        "model": LLM_MODEL_ID,
+        "model": model,
         "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": question},
@@ -91,14 +206,14 @@ def generate_gemma_dialogue(
     }
 
     headers = {
-        "Authorization": f"Bearer {LLM_API_KEY}",
+        "Authorization": f"Bearer {key}",
         "Content-Type": "application/json",
         "HTTP-Referer": "http://localhost:5173",
         "X-Title": "Prompt Dungeon",
     }
 
     try:
-        with httpx.Client(timeout=LLM_TIMEOUT_SECONDS) as client:
+        with httpx.Client(timeout=timeout) as client:
             response = client.post(endpoint, json=payload, headers=headers)
             if response.status_code == 200:
                 data = response.json()
@@ -110,5 +225,6 @@ def generate_gemma_dialogue(
             return None, ModelDialogueStatus.FALLBACK, f"HTTP_{response.status_code}"
     except httpx.TimeoutException:
         return None, ModelDialogueStatus.FALLBACK, "MODEL_TIMEOUT"
-    except Exception as e:
+    except Exception:
         return None, ModelDialogueStatus.FALLBACK, "MODEL_ERROR"
+

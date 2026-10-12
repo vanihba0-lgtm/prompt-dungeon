@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import './App.css';
-import { ApiClientError } from './api';
+import { api, ApiClientError, type HealthResponse } from './api';
 import { investigationService } from './investigationService';
 import type {
   AccuseResponse,
@@ -32,6 +32,7 @@ export default function App() {
   const selectedSuspectRef = useRef<SuspectId>('elias_voss');
   const [config, setConfig] = useState<ConfigResponse | null>(null);
   const [session, setSession] = useState<SessionStateResponse | null>(null);
+  const [healthInfo, setHealthInfo] = useState<HealthResponse | null>(null);
   const [activeTab, setActiveTab] = useState<ActiveTab>('suspects');
   const [selectedSuspect, setSelectedSuspect] = useState<SuspectId>('elias_voss');
 
@@ -74,15 +75,19 @@ export default function App() {
   });
   const [accuseResult, setAccuseResult] = useState<AccuseResponse | null>(null);
 
-  // Load config & active session on mount
+  // Load config, health diagnostics & active session on mount
   useEffect(() => {
     async function init() {
       if (initializedRef.current) return;
       initializedRef.current = true;
       try {
         setLoading(true);
-        const cfg = await investigationService.getConfig();
+        const [cfg, hlt] = await Promise.all([
+          investigationService.getConfig(),
+          api.getHealth().catch(() => null),
+        ]);
         setConfig(cfg);
+        if (hlt) setHealthInfo(hlt);
 
         // Check localStorage for existing session ID
         const savedSid = localStorage.getItem('prompt_dungeon_sid');
@@ -464,6 +469,24 @@ export default function App() {
         </div>
 
         <div className="header-status-panel">
+          {healthInfo && (
+            <div
+              className="badge"
+              style={{
+                background: healthInfo.llm_configured ? 'rgba(92, 229, 184, 0.15)' : 'rgba(255, 255, 255, 0.05)',
+                color: healthInfo.llm_configured ? '#5ce5b8' : 'var(--text-muted)',
+                border: `1px solid ${healthInfo.llm_configured ? 'rgba(92, 229, 184, 0.4)' : 'rgba(255, 255, 255, 0.1)'}`,
+                fontWeight: 600,
+              }}
+              title={
+                healthInfo.llm_configured
+                  ? `Hosted Gemma AI active: ${healthInfo.llm_model || 'configured'}`
+                  : 'Gemma credentials unconfigured; running in deterministic authored dialogue mode.'
+              }
+            >
+              {healthInfo.llm_configured ? '✨ Gemma AI Active' : '📜 Offline Dialogue'}
+            </div>
+          )}
           {session && (
             <>
               <div
@@ -655,10 +678,44 @@ export default function App() {
                                 ⚠️ Lie Uttered: {msg.statementId}
                               </span>
                             )}
-                            {msg.isFallback && (
-                              <span className="response-origin">DETERMINISTIC FALLBACK · {msg.modelStatus}</span>
+                            {msg.sender === 'suspect' && (
+                              msg.isFallback ? (
+                                <span
+                                  style={{
+                                    display: 'inline-flex',
+                                    alignItems: 'center',
+                                    gap: '4px',
+                                    padding: '2px 6px',
+                                    borderRadius: '4px',
+                                    fontSize: '11px',
+                                    background: 'rgba(255, 255, 255, 0.05)',
+                                    color: 'var(--text-muted)',
+                                    border: '1px solid rgba(255, 255, 255, 0.1)',
+                                  }}
+                                  title={`Authored fallback dialogue (${msg.modelStatus || 'fallback'})`}
+                                >
+                                  📜 Fallback Dialogue
+                                </span>
+                              ) : (
+                                <span
+                                  style={{
+                                    display: 'inline-flex',
+                                    alignItems: 'center',
+                                    gap: '4px',
+                                    padding: '2px 6px',
+                                    borderRadius: '4px',
+                                    fontSize: '11px',
+                                    background: 'rgba(92, 229, 184, 0.12)',
+                                    color: '#5ce5b8',
+                                    border: '1px solid rgba(92, 229, 184, 0.3)',
+                                    fontWeight: 600,
+                                  }}
+                                  title="Live Gemma LLM in-character dialogue"
+                                >
+                                  ✨ Gemma AI (Live)
+                                </span>
+                              )
                             )}
-                            {!msg.isFallback && msg.sender === 'suspect' && <span className="response-origin response-origin-live">{msg.modelStatus === 'success' ? 'MODEL RESPONSE' : 'SERVER RESPONSE'} · {msg.modelStatus}</span>}
                           </div>
                         </div>
                       ))

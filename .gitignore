@@ -58,6 +58,13 @@ ehthumbs.db
 Desktop.ini
 .DS_Store
 
-# Frontend dependencies and build artifacts (for Vishal's workspace)
+# SQLite session databases
+*.db
+*.db-wal
+*.db-shm
+
+# Frontend dependencies and build artifacts
 node_modules/
 .npm/
+dist/
+.vercel/
