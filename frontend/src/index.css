@@ -1,21 +1,21 @@
 @import url('https://fonts.googleapis.com/css2?family=Cinzel:wght@600;700;800;900&family=Outfit:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
 
 :root {
-  --bg-core: #090b10;
-  --bg-card: rgba(18, 22, 34, 0.75);
-  --bg-card-hover: rgba(28, 34, 52, 0.85);
-  --bg-glass: rgba(15, 18, 28, 0.65);
+  --bg-core: #070b12;
+  --bg-card: rgba(15, 24, 37, 0.94);
+  --bg-card-hover: rgba(24, 38, 54, 0.98);
+  --bg-glass: rgba(10, 17, 27, 0.82);
   
-  --border-subtle: rgba(255, 215, 0, 0.12);
-  --border-focus: rgba(255, 215, 0, 0.4);
-  --border-gold: rgba(212, 175, 55, 0.35);
+  --border-subtle: rgba(123, 153, 177, 0.18);
+  --border-focus: rgba(44, 220, 205, 0.55);
+  --border-gold: rgba(242, 171, 75, 0.34);
 
-  --accent-gold: #e5b85c;
-  --accent-gold-bright: #ffd700;
-  --accent-amber: #f59e0b;
-  --accent-crimson: #e11d48;
-  --accent-emerald: #10b981;
-  --accent-cyan: #06b6d4;
+  --accent-gold: #eab15d;
+  --accent-gold-bright: #ffd08a;
+  --accent-amber: #f2a943;
+  --accent-crimson: #e05d68;
+  --accent-emerald: #45c995;
+  --accent-cyan: #42ded1;
   --accent-purple: #8b5cf6;
 
   --text-main: #f1f5f9;
@@ -26,8 +26,8 @@
   --font-sans: 'Outfit', sans-serif;
   --font-mono: 'JetBrains Mono', monospace;
 
-  --shadow-gold: 0 0 25px rgba(229, 184, 92, 0.15);
-  --shadow-card: 0 10px 30px rgba(0, 0, 0, 0.5);
+  --shadow-gold: 0 0 25px rgba(50, 218, 205, 0.14);
+  --shadow-card: 0 18px 44px rgba(0, 0, 0, 0.36);
 }
 
 * {
@@ -43,10 +43,10 @@ body {
   line-height: 1.5;
   min-height: 100vh;
   overflow-x: hidden;
-  background-image: 
-    radial-gradient(circle at 15% 15%, rgba(229, 184, 92, 0.05) 0%, transparent 40%),
-    radial-gradient(circle at 85% 85%, rgba(139, 92, 246, 0.04) 0%, transparent 40%),
-    linear-gradient(180deg, #07090e 0%, #090b10 100%);
+  background-image:
+    radial-gradient(ellipse at 50% -15%, rgba(52, 113, 143, 0.19) 0%, transparent 48%),
+    radial-gradient(circle at 92% 78%, rgba(222, 151, 67, 0.035) 0%, transparent 31%),
+    linear-gradient(180deg, #080d15 0%, #070b12 100%);
   background-attachment: fixed;
 }
 
@@ -59,11 +59,11 @@ body {
   background: var(--bg-core);
 }
 ::-webkit-scrollbar-thumb {
-  background: rgba(229, 184, 92, 0.25);
+  background: rgba(67, 212, 202, 0.32);
   border-radius: 4px;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: var(--accent-gold);
+  background: var(--accent-cyan);
 }
 
 button {
@@ -79,15 +79,15 @@ input, textarea, select {
   color: inherit;
   background: rgba(10, 13, 22, 0.8);
   border: 1px solid var(--border-subtle);
-  border-radius: 8px;
+  border-radius: 7px;
   padding: 10px 14px;
   outline: none;
   transition: border-color 0.2s;
 }
 
 input:focus, textarea:focus, select:focus {
-  border-color: var(--accent-gold);
-  box-shadow: 0 0 10px rgba(229, 184, 92, 0.2);
+  border-color: var(--accent-cyan);
+  box-shadow: 0 0 14px rgba(44, 220, 205, 0.12);
 }
 
 /* Utility Animations */

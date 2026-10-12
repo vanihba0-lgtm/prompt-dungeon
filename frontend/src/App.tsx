@@ -1,6 +1,7 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import './App.css';
-import { api, ApiClientError } from './api';
+import { ApiClientError } from './api';
+import { investigationService } from './investigationService';
 import type {
   AccuseResponse,
   ConfigResponse,
@@ -14,6 +15,7 @@ import type {
 } from './types';
 
 type ActiveTab = 'suspects' | 'locations' | 'theories' | 'accuse';
+type Screen = 'opening' | 'investigation';
 
 interface ChatMessage {
   sender: 'player' | 'suspect';
@@ -25,6 +27,9 @@ interface ChatMessage {
 }
 
 export default function App() {
+  const [screen, setScreen] = useState<Screen>('opening');
+  const initializedRef = useRef(false);
+  const selectedSuspectRef = useRef<SuspectId>('elias_voss');
   const [config, setConfig] = useState<ConfigResponse | null>(null);
   const [session, setSession] = useState<SessionStateResponse | null>(null);
   const [activeTab, setActiveTab] = useState<ActiveTab>('suspects');
@@ -72,26 +77,32 @@ export default function App() {
   // Load config & active session on mount
   useEffect(() => {
     async function init() {
+      if (initializedRef.current) return;
+      initializedRef.current = true;
       try {
         setLoading(true);
-        const cfg = await api.getConfig();
+        const cfg = await investigationService.getConfig();
         setConfig(cfg);
 
         // Check localStorage for existing session ID
         const savedSid = localStorage.getItem('prompt_dungeon_sid');
         if (savedSid) {
           try {
-            const sess = await api.getSession(savedSid);
+            const sess = await investigationService.getSession(savedSid);
             setSession(sess);
             syncTheoriesFromSession(sess);
             return;
-          } catch {
-            localStorage.removeItem('prompt_dungeon_sid');
+          } catch (err) {
+            if (err instanceof ApiClientError && err.status === 404) {
+              localStorage.removeItem('prompt_dungeon_sid');
+            } else {
+              throw err;
+            }
           }
         }
 
         // Otherwise create fresh session
-        const fresh = await api.createSession('Lead Detective');
+        const fresh = await investigationService.createSession('Lead Detective');
         setSession(fresh);
         localStorage.setItem('prompt_dungeon_sid', fresh.session_id);
         syncTheoriesFromSession(fresh);
@@ -130,6 +141,32 @@ export default function App() {
     setSuccessMsg(null);
   }
 
+  function selectSuspect(suspectId: SuspectId) {
+    selectedSuspectRef.current = suspectId;
+    setSelectedSuspect(suspectId);
+    setQuestionText('');
+    setPresentationResult(null);
+  }
+
+  async function handleReloadSession() {
+    if (!session) {
+      window.location.reload();
+      return;
+    }
+    try {
+      setLoading(true);
+      const refreshed = await investigationService.getSession(session.session_id);
+      setSession(refreshed);
+      syncTheoriesFromSession(refreshed);
+      clearAlerts();
+      setSuccessMsg('Authoritative case state refreshed.');
+    } catch (err) {
+      handleError(err);
+    } finally {
+      setLoading(false);
+    }
+  }
+
   // Handle Session Reset
   async function handleResetSession() {
     if (!session) return;
@@ -137,7 +174,7 @@ export default function App() {
     try {
       clearAlerts();
       setLoading(true);
-      const res = await api.resetSession(session.session_id);
+      const res = await investigationService.resetSession(session.session_id);
       setSession(res.new_session_state);
       localStorage.setItem('prompt_dungeon_sid', res.new_session_id);
       syncTheoriesFromSession(res.new_session_state);
@@ -164,11 +201,11 @@ export default function App() {
     try {
       clearAlerts();
       setLoading(true);
-      const res = await api.examineTarget(session.session_id, targetId);
+      const res = await investigationService.examineTarget(session.session_id, targetId);
       setLastExamResult(res);
 
       // Refresh session state
-      const updatedSess = await api.getSession(session.session_id);
+      const updatedSess = await investigationService.getSession(session.session_id);
       setSession(updatedSess);
 
       if (res.truth_ledger_updated && res.new_fact) {
@@ -188,6 +225,8 @@ export default function App() {
     e.preventDefault();
     if (!session || !questionText.trim()) return;
     const q = questionText.trim();
+    const suspectId = selectedSuspect;
+    const sessionId = session.session_id;
     setQuestionText('');
     clearAlerts();
 
@@ -199,12 +238,14 @@ export default function App() {
     };
     setChatHistories((prev) => ({
       ...prev,
-      [selectedSuspect]: [...prev[selectedSuspect], playerMsg],
+      [suspectId]: [...prev[suspectId], playerMsg],
     }));
 
+    let receivedReply = false;
     try {
       setLoading(true);
-      const res: InterrogateResponse = await api.interrogate(session.session_id, selectedSuspect, q);
+      const res: InterrogateResponse = await investigationService.interrogate(sessionId, suspectId, q);
+      receivedReply = true;
 
       const suspectMsg: ChatMessage = {
         sender: 'suspect',
@@ -217,13 +258,20 @@ export default function App() {
 
       setChatHistories((prev) => ({
         ...prev,
-        [selectedSuspect]: [...prev[selectedSuspect], suspectMsg],
+        [suspectId]: [...prev[suspectId], suspectMsg],
       }));
 
       // Refresh session state to sync turn counts and interrogated IDs
-      const updated = await api.getSession(session.session_id);
+      const updated = await investigationService.getSession(sessionId);
       setSession(updated);
     } catch (err) {
+      if (!receivedReply) {
+        setChatHistories((prev) => ({
+          ...prev,
+          [suspectId]: prev[suspectId].filter((message) => message !== playerMsg),
+        }));
+        if (selectedSuspectRef.current === suspectId) setQuestionText(q);
+      }
       handleError(err);
     } finally {
       setLoading(false);
@@ -236,7 +284,7 @@ export default function App() {
     try {
       clearAlerts();
       setLoading(true);
-      const res = await api.presentEvidence(
+      const res = await investigationService.presentEvidence(
         session.session_id,
         selectedSuspect,
         selectedEvidenceToPresent
@@ -244,7 +292,7 @@ export default function App() {
       setPresentationResult(res);
 
       // Refresh session state to sync truth ledger contradictions
-      const updated = await api.getSession(session.session_id);
+      const updated = await investigationService.getSession(session.session_id);
       setSession(updated);
 
       if (res.contradiction_validated) {
@@ -268,15 +316,39 @@ export default function App() {
     try {
       clearAlerts();
       setLoading(true);
-      const res = await api.updateTheories(session.session_id, {
+      const res = await investigationService.updateTheories(session.session_id, {
         suspected_culprit_id: theories.suspected_culprit_id || null,
         motive_hypothesis: theories.motive_hypothesis,
         method_hypothesis: theories.method_hypothesis,
         recovery_hypothesis: theories.recovery_hypothesis,
       });
       setSuccessMsg(res.message);
-      const updated = await api.getSession(session.session_id);
+      const updated = await investigationService.getSession(session.session_id);
       setSession(updated);
+      syncTheoriesFromSession(updated);
+    } catch (err) {
+      handleError(err);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function handleClearTheory(field: 'motive_hypothesis' | 'method_hypothesis' | 'recovery_hypothesis') {
+    if (!session) return;
+    const next = { ...theories, [field]: '' };
+    try {
+      clearAlerts();
+      setLoading(true);
+      await investigationService.updateTheories(session.session_id, {
+        suspected_culprit_id: theories.suspected_culprit_id || null,
+        motive_hypothesis: next.motive_hypothesis,
+        method_hypothesis: next.method_hypothesis,
+        recovery_hypothesis: next.recovery_hypothesis,
+      });
+      const updated = await investigationService.getSession(session.session_id);
+      setSession(updated);
+      syncTheoriesFromSession(updated);
+      setSuccessMsg('Theory cleared from the server-side ledger.');
     } catch (err) {
       handleError(err);
     } finally {
@@ -301,7 +373,7 @@ export default function App() {
     try {
       clearAlerts();
       setLoading(true);
-      const res = await api.accuse(session.session_id, {
+      const res = await investigationService.accuse(session.session_id, {
         accused_suspect_id: accusePayload.accused_suspect_id,
         motive_evidence_id: accusePayload.motive_evidence_id as EvidenceId,
         method_evidence_ids: accusePayload.method_evidence_ids,
@@ -310,7 +382,7 @@ export default function App() {
       });
       setAccuseResult(res);
 
-      const updated = await api.getSession(session.session_id);
+      const updated = await investigationService.getSession(session.session_id);
       setSession(updated);
 
       if (res.is_solved) {
@@ -326,17 +398,67 @@ export default function App() {
   }
 
   const currentSuspectObj = config?.suspects.find((s) => s.suspect_id === selectedSuspect);
+  const selectedFact = session?.truth_ledger.facts.find(
+    (fact) => fact.evidence_id === selectedEvidenceToPresent,
+  );
+
+  if (screen === 'opening') {
+    return (
+      <main className="opening-screen">
+        <header className="cinematic-header">
+          <button className="cinematic-brand" onClick={() => setScreen('opening')}>
+            <span className="brand-mark">PD</span>
+            <span>PROMPT <b>DUNGEON</b><small>CONFIDENTIAL INVESTIGATION DIVISION</small></span>
+          </button>
+          <span className="case-index">CASE FILE NO. 001</span>
+        </header>
+        {errorMsg && <div className="alert alert-error" role="alert">{errorMsg}</div>}
+        <section className="opening-hero">
+          <div className="opening-copy">
+            <div className="opening-kicker">PRIVATE MUSEUM EXHIBITION · {session?.case_status ?? 'CONNECTING'}</div>
+            <span className="opening-case-tag">CASE 001 <i>{session?.case_status ?? 'CONNECTING'}</i></span>
+            <h1>The Last<br /><em>Exhibition</em></h1>
+            <p>9:17 PM. The priceless Obsidian Sun disappears during a private museum exhibition. Four people remain under suspicion. The evidence tells one story. The witnesses tell another.</p>
+            <button className="action-amber" onClick={() => setScreen('investigation')} disabled={!session}>
+              {session ? 'BEGIN INVESTIGATION' : loading ? 'PREPARING CASE FILE…' : 'RETRY CONNECTION'} <b>→</b>
+            </button>
+            {errorMsg && !loading && <button className="retry-link" onClick={() => window.location.reload()}>Retry loading the case</button>}
+            <div className="opening-strapline">FOUR SUSPECTS <i /> ONE TRUTH <i /> TRUST NOTHING</div>
+          </div>
+          <div className="opening-art" aria-label="Case file visual: an empty museum display beneath a spotlight">
+            <div className="spotlight-beam" />
+            <div className="museum-display"><span className="empty-mount" /><small>DISPLAY PEDESTAL</small></div>
+            <div className="image-caption">EXHIBITION ROOM · 9:17 PM</div>
+            <div className="case-stamp">CASE<br />001</div>
+            <div className="art-corner art-corner-one" /><div className="art-corner art-corner-two" />
+          </div>
+        </section>
+        <section className="opening-roster">
+          <div className="roster-heading"><span>PERSONS UNDER SUSPICION</span><b>{config?.suspects.length.toString().padStart(2, '0') ?? '—'}</b></div>
+          <div className="roster-cards">
+            {config?.suspects.map((suspect, index) => (
+              <button className={`roster-card roster-tone-${index}`} key={suspect.suspect_id} onClick={() => { selectSuspect(suspect.suspect_id); setScreen('investigation'); }} disabled={!session}>
+                <span className="roster-initials">{suspect.name.split(' ').map((part) => part[0]).join('').slice(0, 2)}</span>
+                <span className="roster-person"><small>{suspect.role}</small><b>{suspect.name}</b></span><i>↗</i>
+              </button>
+            ))}
+          </div>
+        </section>
+        <footer className="cinematic-footer">PROMPT DUNGEON <span>CONFIDENTIAL · CASE 001</span></footer>
+      </main>
+    );
+  }
 
   return (
     <div className="app-container">
       {/* Top Header */}
       <header className="app-header">
         <div className="brand-section">
-          <span className="brand-icon">🏛️</span>
+          <button className="brand-icon" aria-label="Return to case file" onClick={() => setScreen('opening')}>PD</button>
           <div>
             <h1 className="brand-title">PROMPT DUNGEON</h1>
             <p className="brand-subtitle">
-              The Last Exhibition — Heliodor Gallery Theft Investigation (2026)
+              {config?.case_meta.case_title ?? 'The Last Exhibition'} — Investigation Workspace
             </p>
           </div>
         </div>
@@ -366,7 +488,7 @@ export default function App() {
               <div className="header-stat">
                 <span>EVIDENCE</span>
                 <span className="header-stat-val">
-                  {session.discovered_evidence_ids.length} / 12
+                  {session.discovered_evidence_ids.length} / {config?.locations.length ?? 0}
                 </span>
               </div>
 
@@ -378,14 +500,17 @@ export default function App() {
         </div>
       </header>
 
+      <nav className="screen-navigation" aria-label="Case navigation">
+        <button onClick={() => setScreen('opening')}>← CASE FILE</button>
+        <span>INVESTIGATION WORKSPACE <i>·</i> {session?.case_status ?? 'CONNECTING'}</span>
+      </nav>
+
       {/* Case Overview Intro Banner */}
       <section className="case-banner">
         <div className="case-banner-text">
-          <h2>THE OBSIDIAN SUN HAS DISAPPEARED</h2>
+          <h2>THE LAST EXHIBITION</h2>
           <p>
-            At 9:17 PM during a 4-minute camera blackout, the 14th-century Aztec relic vanished from its
-            pressurized vitrine. No glass broken, no alarms tripped. Four suspects had proximity.
-            Uncover physical proof, break their lies, and submit an indictment to the Magistrate.
+            9:17 PM. The priceless Obsidian Sun disappears during a private museum exhibition. Four people remain under suspicion. The evidence tells one story. The witnesses tell another.
           </p>
         </div>
       </section>
@@ -394,6 +519,9 @@ export default function App() {
       {errorMsg && (
         <div className="alert alert-error fade-in">
           <span>⚠️</span> <span>{errorMsg}</span>
+          <button className="alert-retry" onClick={() => void handleReloadSession()} disabled={loading}>
+            {loading ? 'SYNCING…' : session ? 'REFRESH SERVER STATE' : 'RETRY CONNECTION'}
+          </button>
         </div>
       )}
       {successMsg && (
@@ -414,7 +542,7 @@ export default function App() {
           className={`tab-btn ${activeTab === 'locations' ? 'active' : ''}`}
           onClick={() => setActiveTab('locations')}
         >
-          🔍 Crime Scene & Locations ({session?.discovered_evidence_ids.length || 0}/12)
+          🔍 Crime Scene & Locations ({session?.discovered_evidence_ids.length || 0}/{config?.locations.length ?? 0})
         </button>
         <button
           className={`tab-btn ${activeTab === 'theories' ? 'active' : ''}`}
@@ -441,64 +569,51 @@ export default function App() {
                 {config?.suspects.map((s) => {
                   const isInterrogated = session?.interrogated_suspect_ids.includes(s.suspect_id);
                   return (
-                    <div
+                    <button
                       key={s.suspect_id}
                       className={`suspect-card ${selectedSuspect === s.suspect_id ? 'selected' : ''}`}
-                      onClick={() => setSelectedSuspect(s.suspect_id)}
+                      onClick={() => selectSuspect(s.suspect_id)}
+                      aria-pressed={selectedSuspect === s.suspect_id}
                     >
                       <div className="suspect-header">
-                        <div className="suspect-avatar">
-                          {s.suspect_id === 'elias_voss' ? '🔬' : s.suspect_id === 'mira_sen' ? '📜' : s.suspect_id === 'noah_reed' ? '💻' : '💎'}
-                        </div>
+                        <div className="suspect-avatar">{s.name.split(' ').map((part) => part[0]).join('').slice(0, 2)}</div>
                         <div>
                           <div className="suspect-name">{s.name}</div>
                           <div className="suspect-role">{s.role}</div>
                         </div>
                       </div>
-                      <p className="suspect-quote">"{s.public_statement}"</p>
+                      <p className="suspect-quote">{s.bio}</p>
                       {isInterrogated && (
                         <div style={{ fontSize: '11px', color: 'var(--accent-emerald)', marginTop: '4px' }}>
                           ✓ Questioned
                         </div>
                       )}
-                    </div>
+                    </button>
                   );
                 })}
               </div>
+
+              <section className="card inventory-panel">
+                <div className="card-title"><span>DISCOVERED EVIDENCE</span><span className="inventory-count">{session?.discovered_evidence_ids.length ?? 0} FILED</span></div>
+                {session?.truth_ledger.facts.length ? (
+                  <div className="inventory-grid">
+                    {session.truth_ledger.facts.map((fact) => (
+                      <button key={fact.fact_id} className={`inventory-tile ${selectedEvidenceToPresent === fact.evidence_id ? 'selected' : ''}`} onClick={() => setSelectedEvidenceToPresent(fact.evidence_id)} aria-pressed={selectedEvidenceToPresent === fact.evidence_id}>
+                        <small>{fact.evidence_id} · {fact.category}</small><b>{fact.title}</b><span>{fact.summary}</span>
+                      </button>
+                    ))}
+                  </div>
+                ) : <p className="empty-ledger">No evidence has been discovered. Examine a location to add items from the authoritative case file.</p>}
+                {selectedFact && <div className="selected-evidence-detail"><div><small>SELECTED EVIDENCE · {selectedFact.evidence_id}</small><b>{selectedFact.title}</b><p>{selectedFact.summary}</p></div><button className="btn-primary" onClick={handlePresentEvidence} disabled={loading || session?.case_status !== 'ACTIVE'}>PRESENT TO {currentSuspectObj?.name.toUpperCase()} →</button></div>}
+              </section>
 
               {/* Chat & Confrontation Panel */}
               <div className="card">
                 <div className="card-title">
                   <span>INTERROGATING: {currentSuspectObj?.name?.toUpperCase()}</span>
-                  <span style={{ fontSize: '12px', color: 'var(--text-muted)' }}>
-                    {chatHistories[selectedSuspect].length} turn(s) recorded
+                  <span style={{ fontSize: '10px', color: 'var(--text-muted)' }}>
+                    LOCAL TRANSCRIPT · {chatHistories[selectedSuspect].length} MESSAGES
                   </span>
-                </div>
-
-                {/* Evidence Confrontation Bar */}
-                <div style={{ display: 'flex', gap: '10px', marginBottom: '14px', alignItems: 'center' }}>
-                  <select
-                    style={{ flex: 1 }}
-                    value={selectedEvidenceToPresent}
-                    onChange={(e) => setSelectedEvidenceToPresent(e.target.value as EvidenceId)}
-                  >
-                    <option value="">-- Present discovered evidence to confront suspect --</option>
-                    {session?.discovered_evidence_ids.map((eid) => {
-                      const fact = session.truth_ledger.facts.find((f) => f.evidence_id === eid);
-                      return (
-                        <option key={eid} value={eid}>
-                          {eid}: {fact?.title || 'Discovered Item'}
-                        </option>
-                      );
-                    })}
-                  </select>
-                  <button
-                    className="btn-primary"
-                    disabled={!selectedEvidenceToPresent || loading}
-                    onClick={handlePresentEvidence}
-                  >
-                    Confront with Evidence
-                  </button>
                 </div>
 
                 {presentationResult && (
@@ -508,16 +623,17 @@ export default function App() {
                       borderRadius: '8px',
                       marginBottom: '12px',
                       background: presentationResult.contradiction_validated
-                        ? 'rgba(16, 185, 129, 0.15)'
+                        ? 'rgba(224, 93, 104, 0.12)'
                         : 'rgba(255, 255, 255, 0.04)',
-                      border: '1px solid var(--border-subtle)',
+                      border: `1px solid ${presentationResult.contradiction_validated ? 'rgba(224, 93, 104, 0.48)' : 'var(--border-subtle)'}`,
                       fontSize: '13px',
                     }}
                   >
-                    <div style={{ fontWeight: 700, marginBottom: '4px', color: 'var(--accent-gold)' }}>
-                      SUSPECT REACTION:
+                    <div style={{ fontWeight: 700, marginBottom: '4px', color: 'var(--accent-amber)' }}>
+                      SERVER REACTION · {presentationResult.evidence_id} TO {config?.suspects.find((person) => person.suspect_id === presentationResult.suspect_id)?.name?.toUpperCase()} · {presentationResult.is_fallback ? 'DETERMINISTIC FALLBACK' : presentationResult.model_status === 'success' ? 'MODEL RESPONSE' : `SERVER STATUS ${presentationResult.model_status.toUpperCase()}`}
                     </div>
                     <div>"{presentationResult.suspect_reaction}"</div>
+                    {presentationResult.contradiction && <div className="validated-reaction">SERVER VALIDATION · {presentationResult.contradiction.validation_state}</div>}
                   </div>
                 )}
 
@@ -540,8 +656,9 @@ export default function App() {
                               </span>
                             )}
                             {msg.isFallback && (
-                              <span style={{ color: 'var(--text-faint)' }}>• {msg.modelStatus}</span>
+                              <span className="response-origin">DETERMINISTIC FALLBACK · {msg.modelStatus}</span>
                             )}
+                            {!msg.isFallback && msg.sender === 'suspect' && <span className="response-origin response-origin-live">{msg.modelStatus === 'success' ? 'MODEL RESPONSE' : 'SERVER RESPONSE'} · {msg.modelStatus}</span>}
                           </div>
                         </div>
                       ))
@@ -551,7 +668,7 @@ export default function App() {
                   <form className="chat-input-bar" onSubmit={handleInterrogate}>
                     <input
                       type="text"
-                      placeholder={`Ask ${currentSuspectObj?.name} about whereabouts, tools, finances... (max 500 chars)`}
+                      placeholder={`Ask ${currentSuspectObj?.name} a question… (max 500 characters)`}
                       value={questionText}
                       maxLength={500}
                       onChange={(e) => setQuestionText(e.target.value)}
@@ -576,7 +693,7 @@ export default function App() {
               <div className="card-title">
                 <span>FACILITY EXAMINATION DIRECTORY</span>
                 <span style={{ fontSize: '13px', color: 'var(--text-muted)' }}>
-                  12 Forensic Targets
+                  {config?.locations.length ?? 0} Forensic Targets
                 </span>
               </div>
 
@@ -662,34 +779,39 @@ export default function App() {
                   </select>
                 </div>
 
+                <p className="form-hint">Motive, method, and recovery notes can be cleared by saving them empty. The current API does not support unassigning a suspect once selected.</p>
+
                 <div className="form-group">
                   <label className="form-label">MOTIVE HYPOTHESIS</label>
-                  <textarea
+                      <textarea
                     rows={2}
-                    placeholder="Why did they steal the relic? Extortion, academic scandal, greed?"
+                        placeholder="Record an unverified motive theory…"
                     value={theories.motive_hypothesis}
                     onChange={(e) => setTheories({ ...theories, motive_hypothesis: e.target.value })}
                   />
+                      {theories.motive_hypothesis && <button type="button" className="theory-clear" disabled={loading} onClick={() => void handleClearTheory('motive_hypothesis')}>CLEAR FILED THEORY</button>}
                 </div>
 
                 <div className="form-group">
                   <label className="form-label">METHOD & BYPASS HYPOTHESIS</label>
                   <textarea
                     rows={2}
-                    placeholder="How did they open the vitrine and enter/exit the locked gallery?"
+                        placeholder="Record an unverified method theory…"
                     value={theories.method_hypothesis}
                     onChange={(e) => setTheories({ ...theories, method_hypothesis: e.target.value })}
                   />
+                      {theories.method_hypothesis && <button type="button" className="theory-clear" disabled={loading} onClick={() => void handleClearTheory('method_hypothesis')}>CLEAR FILED THEORY</button>}
                 </div>
 
                 <div className="form-group">
                   <label className="form-label">ARTIFACT RECOVERY HYPOTHESIS</label>
                   <textarea
                     rows={2}
-                    placeholder="Where is the Obsidian Sun hidden right now?"
+                        placeholder="Record an unverified recovery theory…"
                     value={theories.recovery_hypothesis}
                     onChange={(e) => setTheories({ ...theories, recovery_hypothesis: e.target.value })}
                   />
+                      {theories.recovery_hypothesis && <button type="button" className="theory-clear" disabled={loading} onClick={() => void handleClearTheory('recovery_hypothesis')}>CLEAR FILED THEORY</button>}
                 </div>
 
                 <button type="submit" className="btn-primary" disabled={loading}>
@@ -705,7 +827,7 @@ export default function App() {
               <div className="card-title">
                 <span>SUBMIT FORMAL INDICTMENT TO DISTRICT MAGISTRATE</span>
                 <span style={{ fontSize: '12px', color: 'var(--accent-crimson)' }}>
-                  {3 - (session?.accusation_attempts || 0)} attempts remaining
+                  {(config?.rules.max_accusation_attempts ?? session?.max_accusation_attempts ?? 0) - (session?.accusation_attempts || 0)} attempts remaining
                 </span>
               </div>
 
@@ -966,7 +1088,7 @@ export default function App() {
           <div className="card">
             <div className="card-title">
               <span>CONTRADICTIONS</span>
-              <span style={{ fontSize: '11px', color: 'var(--accent-crimson)' }}>SHATTERED LIES</span>
+              <span style={{ fontSize: '11px', color: 'var(--accent-crimson)' }}>SERVER VALIDATED</span>
             </div>
 
             <div className="evidence-list">
@@ -994,6 +1116,22 @@ export default function App() {
                 ))
               )}
             </div>
+          </div>
+
+          <div className="card theory-ledger-card">
+            <div className="card-title"><span>PLAYER THEORIES</span><span className="unverified-label">UNVERIFIED</span></div>
+            <p className="ledger-theory-entry"><small>SUSPECT</small><b>{config?.suspects.find((item) => item.suspect_id === session?.truth_ledger.theories.suspected_culprit_id)?.name ?? 'No suspect filed'}</b></p>
+            {([
+              ['MOTIVE', session?.truth_ledger.theories.motive_hypothesis],
+              ['METHOD', session?.truth_ledger.theories.method_hypothesis],
+              ['RECOVERY', session?.truth_ledger.theories.recovery_hypothesis],
+            ] as const).map(([label, value]) => value ? <p className="ledger-theory-entry" key={label}><small>{label}</small><span>{value}</span></p> : null)}
+            <button className="ledger-edit-button" onClick={() => setActiveTab('theories')}>EDIT THEORY FILE →</button>
+          </div>
+
+          <div className="card chronology-card">
+            <div className="card-title"><span>CASE CHRONOLOGY</span><span className="inventory-count">SESSION LOG</span></div>
+            {session?.recent_events.length ? <ol className="event-timeline">{[...session.recent_events].reverse().map((event, index) => <li key={`${event.timestamp}-${index}`}><time>{new Date(event.timestamp).toLocaleTimeString()}</time><b>{event.event_type.replaceAll('_', ' ')}</b><span>{event.summary}</span></li>)}</ol> : <p className="empty-ledger">No investigation actions recorded yet.</p>}
           </div>
         </aside>
       </div>
