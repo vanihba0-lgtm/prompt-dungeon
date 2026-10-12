@@ -43,7 +43,6 @@ export interface SuspectPublic {
   role: string;
   avatar: string;
   bio: string;
-  public_statement: string;
 }
 
 export interface ExaminationTargetPublic {

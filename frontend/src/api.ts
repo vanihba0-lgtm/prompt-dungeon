@@ -38,13 +38,15 @@ export class ApiClientError extends Error {
 
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   const url = `${API_BASE}${path}`;
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), 25_000);
   const headers = {
     'Content-Type': 'application/json',
     ...(options.headers || {}),
   };
 
   try {
-    const res = await fetch(url, { ...options, headers });
+    const res = await fetch(url, { ...options, headers, signal: controller.signal });
     if (!res.ok) {
       let errPayload: ApiErrorResponse['error'];
       try {
@@ -68,11 +70,27 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
     if (err instanceof ApiClientError) {
       throw err;
     }
+    if (err instanceof DOMException && err.name === 'AbortError') {
+      throw new ApiClientError(0, {
+        code: 'REQUEST_TIMEOUT',
+        message: 'The server did not respond in time. Refresh server state before repeating an action.',
+        retryable: true,
+      });
+    }
+    if (err instanceof SyntaxError) {
+      throw new ApiClientError(0, {
+        code: 'INVALID_RESPONSE',
+        message: 'The server returned an unreadable response. Refresh server state before repeating an action.',
+        retryable: true,
+      });
+    }
     throw new ApiClientError(0, {
       code: 'NETWORK_ERROR',
       message: err instanceof Error ? err.message : 'Network request failed. Is the server running?',
       retryable: true,
     });
+  } finally {
+    window.clearTimeout(timeout);
   }
 }
 
